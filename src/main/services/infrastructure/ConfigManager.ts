@@ -342,15 +342,26 @@ export class ConfigManager {
 
   /**
    * Persists configuration to the canonical path.
+   * Applies secure file permissions (600 on Unix systems).
    */
   private persistConfig(config: AppConfig): void {
     const configDir = path.dirname(this.configPath);
     if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
+      // Create directory with restrictive permissions (700 = owner only)
+      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
     }
 
     const content = JSON.stringify(config, null, 2);
-    fs.writeFileSync(this.configPath, content, 'utf8');
+    
+    // Write config with restrictive permissions (600 = owner read/write only)
+    // This prevents other local users from reading sensitive configuration
+    fs.writeFileSync(this.configPath, content, { 
+      encoding: 'utf8',
+      mode: 0o600 
+    });
+
+    // Verify permissions were applied correctly
+    this.verifyConfigPermissions();
   }
 
   /**
@@ -399,6 +410,46 @@ export class ConfigManager {
    */
   private deepClone<T>(obj: T): T {
     return JSON.parse(JSON.stringify(obj)) as T;
+  }
+
+  /**
+   * Verifies and fixes config file permissions on Unix systems.
+   * Ensures the config file has 600 permissions (owner read/write only).
+   * On Windows, this check is skipped as Windows uses ACLs instead of Unix permissions.
+   */
+  private verifyConfigPermissions(): void {
+    // Skip permission checks on Windows (uses ACLs, not Unix permissions)
+    if (os.platform() === 'win32') {
+      return;
+    }
+
+    try {
+      if (!fs.existsSync(this.configPath)) {
+        return;
+      }
+
+      const stats = fs.statSync(this.configPath);
+      const mode = stats.mode & parseInt('777', 8);
+      const expectedMode = parseInt('600', 8);
+
+      if (mode !== expectedMode) {
+        logger.warn(
+          `Config file has insecure permissions (${mode.toString(8)}), expected 600. Attempting to fix...`
+        );
+        
+        try {
+          fs.chmodSync(this.configPath, 0o600);
+          logger.info('Config file permissions fixed successfully');
+        } catch (chmodError) {
+          logger.error('Failed to fix config file permissions:', chmodError);
+          logger.warn(
+            'Config file may be readable by other users. Please manually set permissions: chmod 600 ~/.claude/claude-devtools-config.json'
+          );
+        }
+      }
+    } catch (error) {
+      logger.error('Error verifying config file permissions:', error);
+    }
   }
 
   // ===========================================================================
